@@ -16,6 +16,8 @@ config_file = 'devman.conf'
 override_file = 'devman.local.conf'
 os.environ['GIT_SSH'] = os.path.join(install_dir, 'ssh_wrapper')
 os.environ['LANGUAGE'] = 'en_US:en_US'
+debug = False
+
 ######
 # load module from local modules path
 sys.path.append(os.path.join(install_dir, 'modules'))
@@ -24,6 +26,7 @@ from git import Repo
 from git import GitCommandError
 from git import NoSuchPathError
 from git import InvalidGitRepositoryError
+from git.util import RemoteProgress
 
 # arguments
 from argparse import ArgumentParser
@@ -46,10 +49,6 @@ def sh(cmd):
     output = str(e.output)
   return output
 
-
-debug = False
-
-from git.util import RemoteProgress
 class DisProgress(RemoteProgress):
   if debug:
     def line_dropped(self, line):
@@ -65,8 +64,8 @@ class DevMan:
     self.args = self.argument_parser()
     self.command = self.args.cmd
 
-    
     self.repo_conf_file = self.config['default']['repo_conf_file']
+    self.repo_conf_folder = self.config['default']['repo_conf_folder']
     self.release_branch = self.config['default']['release_branch']
 
     target_os = platform.system()
@@ -213,9 +212,10 @@ class DevMan:
   # #
   def loadRepos(self):
     # load yaml file
+    repo_list = os.listdir(os.path.join(install_dir, self.repo_conf_folder))
     repo_conf = os.path.join(install_dir, self.repo_conf_file)
     stream = open(repo_conf, 'r')
-    self.repo_list = yaml.safe_load(stream)
+    self.repo_list = yaml.safe_load_all(stream)
 
     # load only configured groups from config file
     repos = {}
