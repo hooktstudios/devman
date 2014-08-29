@@ -29,7 +29,6 @@ from git import InvalidGitRepositoryError
 from argparse import ArgumentParser
 from argparse import SUPPRESS
 from ConfigParser import SafeConfigParser
-import yaml
 
 import pprint as pp
 
@@ -65,9 +64,8 @@ class DevMan:
     self.args = self.argument_parser()
     self.command = self.args.cmd
 
-    
-    self.repo_conf_file = self.config['default']['repo_conf_file']
     self.release_branch = self.config['default']['release_branch']
+    self.repo_conf_folder = self.config['default']['repo_conf_folder']
 
     target_os = platform.system()
     
@@ -106,6 +104,9 @@ class DevMan:
     if not os.path.isdir(self.repo_clone_path):
       sh("mkdir -p " + self.repo_clone_path)
 
+    # load repos definition
+    self.repos = self.loadRepos()
+
     # process given args before loading repos
     if self.args.all:
       self.groups = self.getAllGroups()
@@ -114,10 +115,6 @@ class DevMan:
       self.groups.append(self.config['default']['repo_group'])
     else:
       self.groups = flatten(self.args.groups)
-
-    # load repos definition
-    self.repos = self.loadRepos()
-    
   
   def argument_parser(self):
     # arguments definitions 
@@ -156,10 +153,7 @@ class DevMan:
   
   def getAllGroups(self):
     all_groups= []
-    repo_conf = os.path.join(install_dir, self.repo_conf_file)
-    stream = open(repo_conf, 'r')
-    repo_list = yaml.safe_load(stream)
-    for group_name, group_config in repo_list.items():
+    for group_name, group_config in self.repo_list.items():
         all_groups.append(group_name)
     return all_groups
 
@@ -167,68 +161,93 @@ class DevMan:
   # return repos from group
   # # 
   def getRepos(self):
-    all_repos = {}
-    for g in self.groups:
-      all_repos[g] = self.repos[g]
-    return all_repos
+    org_repos = {}
+    repoList = {}
+    for org in sorted(self.repos):
+      for g in self.groups:
+        if self.repos[org].has_key(g):
+          org_repos[g] = self.repos[org][g]
+      repoList[org] = org_repos
+    return repoList
 
   def iterRepos(self, create=False, clean=True):
-    for group, repo_definition in self.getRepos().items():
-      for repo_name, repo_url in repo_definition.items():
-        if group == 'root':
-          repo_path = os.path.join(self.repo_clone_path,repo_name)
-        else:
-          repo_path = os.path.join(self.repo_clone_path, group, repo_name)
-        try:
-          repo = Repo(repo_path)
-          if repo.bare == True:
-            print "Cannot process bare repo: %s" % repo_name 
-            pass
-          elif repo.is_dirty() :
-              if clean:
-                  print "Cannot process dirty repo: %s" % repo_name
-                  pass
-              else:
-                  yield repo_name, repo_path, repo_url, repo
+    repoList = self.getRepos() 
+    for org in repoList:
+      for group, repo_definition in repoList[org].items():
+        for repo_name, repo_url in repo_definition.items():
+          if group == 'root':
+            repo_path = os.path.join(self.repo_clone_path,repo_name)
           else:
-            yield repo_name, repo_path, repo_url, repo
-        except InvalidGitRepositoryError:
-          print "Error: Repository " + repo_name + " is not a git repo. Remove folder and try again."
-          exit(1)
-        except NoSuchPathError:
-          if create:
-            print "Cloning " + repo_name
-            this_repo = Repo.clone_from(repo_url, repo_path , progress=DisProgress())
-            for submodule in this_repo.submodules:
-              print "Now Initializing submodule:" + str(submodule)
-              submodule.update(progress=DisProgress())
-          else:
-            print 'Error: Repository %s does not exist. Please use git clone first.' % repo_name
+            repo_path = os.path.join(self.repo_clone_path, group, repo_name)
+          try:
+            repo = Repo(repo_path)
+            if repo.bare == True:
+              print "Cannot process bare repo: %s" % repo_name 
+              pass
+            elif repo.is_dirty() :
+                if clean:
+                    print "Cannot process dirty repo: %s" % repo_name
+                    pass
+                else:
+                    yield repo_name, repo_path, repo_url, repo
+            else:
+              yield repo_name, repo_path, repo_url, repo
+          except InvalidGitRepositoryError:
+            print "Error: Repository " + repo_name + " is not a git repo. Remove folder and try again."
             exit(1)
+          except NoSuchPathError:
+            if create:
+              print "Cloning " + repo_name
+              this_repo = Repo.clone_from(repo_url, repo_path , progress=DisProgress())
+              for submodule in this_repo.submodules:
+                print "Now Initializing submodule:" + str(submodule)
+                submodule.update(progress=DisProgress())
+            else:
+              print 'Error: Repository %s does not exist. Please use git clone first.' % repo_name
+              exit(1)
 
 
   # #
-  # Load git repos definition from yaml files
+  # Load git repos definition from repos files
   # Add configuration layer from default config
   # #
+  def merge_repos(self, repoA, repoB):
+    merged_dict = {key: value for (key, value) in (repoA.items() + repoB.items())}
+    return merged_dict
+
   def loadRepos(self):
-    # load yaml file
-    repo_conf = os.path.join(install_dir, self.repo_conf_file)
-    stream = open(repo_conf, 'r')
-    self.repo_list = yaml.safe_load(stream)
+    self.repo_list = {}
+    conf = {}
+    repo_folder = os.path.join(install_dir, self.repo_conf_folder)
+    for root,_, files in os.walk(repo_folder):
+      for f in files: 
+        if f.endswith('.json'):
+          import json
+          repo_conf = os.path.join(repo_folder,f)
+          stream = open(repo_conf, 'r')
+          this_repo_list = json.loads(stream.read())
+          self.repo_list = self.merge_repos(self.repo_list, this_repo_list)
+        elif f.endswith('.yaml'):
+          import yaml
+          repo_conf = os.path.join(repo_folder,f)
+          stream = open(repo_conf, 'r')
+          this_repo_list = yaml.loads(stream.read())
+          self.repo_list = self.merge_repos(self.repo_list, this_repo_list)
+        else:
+          pass
 
     # load only configured groups from config file
     repos = {}
-    for group in self.groups:
-      if group in self.repo_list:
+    repoList = {}
+    for org in self.repo_list:
+      for group in self.repo_list[org]:
         updated_repos = {}
-        for repo_name, repo_url in self.repo_list[group].items():
-          remote_url = self.git_url + repo_url
+        for repo_name, repo_url in self.repo_list[org][group].items():
+          remote_url = self.git_url + org + '/' + repo_url
           updated_repos[repo_name] = remote_url
         repos[group] = updated_repos
-      else:
-        raise Exception("Error: could not find group {0} in {1}.".format(group, repo_conf))
-    return repos
+      repoList[org] = repos
+    return repoList
 
   def git_clone(self, path, url):
     try:
@@ -249,7 +268,7 @@ class DevMan:
 
   # checkout branch
   def co(self, branch):
-    for name, path, url, repo in self.iterRepos():
+    for name, path, url, repo in sorted(self.iterRepos()):
       remote_branches = [remote.strip() for remote in repo.git.branch(r=True).splitlines()]
       local_branches = repo.branches
       current_branch = str(repo.active_branch)
@@ -269,7 +288,7 @@ class DevMan:
 
     
   def st(self):
-    for name, path, url, repo in self.iterRepos(clean=False):
+    for name, path, url, repo in sorted(self.iterRepos(clean=False)):
 
       dirty = ""
       staged = ""
@@ -319,14 +338,14 @@ class DevMan:
               print "  + " + filename
 
   def ff(self):
-    for name, path, url, repo in self.iterRepos():
+    for name, path, url, repo in sorted(self.iterRepos()):
         print "Fast-forward from origin: {0}".format(name)
         cur_branch = repo.head.reference.name
         o = repo.remotes.origin
         o.pull(cur_branch, ff_only=True, progress=DisProgress())
 
   def fetch(self, prune):
-    for name, path, url, repo in self.iterRepos():
+    for name, path, url, repo in sorted(self.iterRepos()):
       try:
         if prune:
           print "Fetch prune: {0}".format(name)
@@ -339,15 +358,27 @@ class DevMan:
         else:
           raise e
 
+  def print_rlist(self, rlist):
+    for org in sorted(rlist):
+      print org
+      for group in sorted(rlist[org]):
+        print "> " + group
+        for repo_name, repo_url in sorted(rlist[org][group].items()):
+          print  "  - " + repo_name 
+
   def ls(self):
     print '------------------------------------------------'
     print '| Available                                    |'
     print '------------------------------------------------'
-    pp.pprint(self.repo_list)
+    self.print_rlist(self.repo_list)
     print '------------------------------------------------'
-    print '| Now                                          |'
+    print '| Current                                      |'
     print '------------------------------------------------'
-    pp.pprint(self.getRepos())
+    self.print_rlist(self.getRepos())
+    #  for group in sorted(self.getRepos()):
+    #    print group
+    #    for repo_name, repo_url in sorted(self.repo_list[group].items()):
+    #      print  "- " + repo_name + " => " + repo_url
 
   def run(self):
     if self.command == 'ls':
