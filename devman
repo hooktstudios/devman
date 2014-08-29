@@ -231,7 +231,7 @@ class DevMan:
           import yaml
           repo_conf = os.path.join(repo_folder,f)
           stream = open(repo_conf, 'r')
-          this_repo_list = yaml.loads(stream.read())
+          this_repo_list = yaml.safe_load(stream)
           self.repo_list = self.merge_repos(self.repo_list, this_repo_list)
         else:
           pass
